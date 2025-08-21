@@ -46,6 +46,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,7 +64,7 @@ type Video struct {
 	ID         string `json:"id"`
 	YoutubeUrl string `json:"youtube_url"`
 	AudioPath  string `json:"audio_url"`
-	Stutus     string `json:"stutus"`
+	Status     string `json:"status"`
 	CreatedAt  string `json:"created_at"`
 	UpdateAt   string `json:"update_at"`
 }
@@ -105,7 +106,7 @@ type TranslationResult struct {
 // スライス（配列）（DBのテーブル代わりメモリ上に置くためサーバー停止後消える）
 var (
 	videos       = []Video{}       //動画情報テーブル
-	tramscropts  = []Transcript{}  //字幕情報テーブル
+	transcripts  = []Transcript{}  //字幕情報テーブル
 	translations = []Translation{} //翻訳情報テーブル
 	mu           sync.Mutex        // 複数の処理が同時にデータを書き換えるのを防ぐためのロック
 )
@@ -177,7 +178,7 @@ func main() {
 
 	// CORSの設定
 	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:5174"},
+		AllowOrigins:     []string{"http://localhost:5173"}, // Reactのアドレス
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
 		AllowCredentials: true,
@@ -217,7 +218,7 @@ func createVideo(c *gin.Context) {
 	video := Video{
 		ID:         uuid.New().String(),
 		YoutubeUrl: req.YoutubeURL,
-		Stutus:     "processing",
+		Status:     "processing",
 		CreatedAt:  time.Now().Format(time.RFC3339),
 		UpdateAt:   time.Now().Format(time.RFC3339),
 	}
@@ -273,7 +274,7 @@ func getTranscript(c *gin.Context) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	for _, transcript := range tramscropts {
+	for _, transcript := range transcripts {
 		if transcript.VideoId == id {
 			c.JSON(http.StatusOK, transcript)
 			return
@@ -307,7 +308,7 @@ func updateVideoStatus(videoID, status string) {
 
 	for i, video := range videos {
 		if video.ID == videoID {
-			videos[i].Stutus = status
+			videos[i].Status = status
 			videos[i].UpdateAt = time.Now().Format(time.RFC3339)
 			break
 		}
@@ -389,7 +390,7 @@ func processVideo(v Video, apiKey string) {
 		CreatedAt:    time.Now().Format(time.RFC3339),
 	}
 	mu.Lock()
-	tramscropts = append(tramscropts, t)
+	transcripts = append(transcripts, t)
 	updateVideoStatus(v.ID, "completed")
 	mu.Unlock()
 	log.Printf("保存完了: VideoID=%s", v.ID)
@@ -410,7 +411,7 @@ func translateTextWithGPT(text, apiKey string) (*TranslationResult, error) {
 	}
 	body, _ := json.Marshal(payload)
 
-	req, _ := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewBuffer(body))
+	req, _ := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key="+apiKey, bytes.NewBuffer(body))
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -449,8 +450,19 @@ func transcribeWithGoogleSpeech(audioFile string) (string, error) {
 		return "", fmt.Errorf("GOOGLE_CREDENTIALS_JSON環境変数が設定されていません")
 	}
 
+	// エスケープされた改行文字を実際の改行文字に変換
+	credentialsJSON = strings.ReplaceAll(credentialsJSON, "\\n", "\n")
+	
+	// JSONの妥当性を確認
+	var credMap map[string]interface{}
+	if err := json.Unmarshal([]byte(credentialsJSON), &credMap); err != nil {
+		return "", fmt.Errorf("認証JSON解析エラー: %v", err)
+	}
+
+	credentialsBytes := []byte(credentialsJSON)
+
 	// クライアントを作成
-	client, err := speech.NewClient(ctx, option.WithCredentialsJSON([]byte(credentialsJSON)))
+	client, err := speech.NewClient(ctx, option.WithCredentialsJSON(credentialsBytes))
 	if err != nil {
 		return "", fmt.Errorf("Speech-to-Textクライアント作成エラー: %v", err)
 	}

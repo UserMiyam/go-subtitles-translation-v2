@@ -36,7 +36,7 @@ function App() {
       youtube_url: url
     }
 
-    // サーバーに送信
+    // videosサーバーに送信React fetchAPI　
     fetch(serverUrl, {
       method: 'POST',
       headers: {

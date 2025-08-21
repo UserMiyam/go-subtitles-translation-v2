@@ -22,3 +22,5 @@ rad.json
 TestResults.xml
 
 backend/.env
+backend/gcp-key.json
+gcp-key.json

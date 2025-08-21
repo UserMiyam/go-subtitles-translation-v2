@@ -450,16 +450,25 @@ func transcribeWithGoogleSpeech(audioFile string) (string, error) {
 		return "", fmt.Errorf("GOOGLE_CREDENTIALS_JSON環境変数が設定されていません")
 	}
 
-	// エスケープされた改行文字を実際の改行文字に変換
-	credentialsJSON = strings.ReplaceAll(credentialsJSON, "\\n", "\n")
+	// JSONを一度パースしてから再構築することでエスケープを処理
+	var rawCredentials map[string]interface{}
 	
-	// JSONの妥当性を確認
-	var credMap map[string]interface{}
-	if err := json.Unmarshal([]byte(credentialsJSON), &credMap); err != nil {
+	// まず生のJSONをパース
+	decoder := json.NewDecoder(strings.NewReader(credentialsJSON))
+	if err := decoder.Decode(&rawCredentials); err != nil {
 		return "", fmt.Errorf("認証JSON解析エラー: %v", err)
 	}
-
-	credentialsBytes := []byte(credentialsJSON)
+	
+	// private_keyの改行エスケープを修正
+	if privateKey, ok := rawCredentials["private_key"].(string); ok {
+		rawCredentials["private_key"] = strings.ReplaceAll(privateKey, "\\n", "\n")
+	}
+	
+	// 修正したJSONを再エンコード
+	credentialsBytes, err := json.Marshal(rawCredentials)
+	if err != nil {
+		return "", fmt.Errorf("認証JSON再構築エラー: %v", err)
+	}
 
 	// クライアントを作成
 	client, err := speech.NewClient(ctx, option.WithCredentialsJSON(credentialsBytes))

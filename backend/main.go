@@ -326,6 +326,13 @@ func updateVideoStatus(videoID, status string) {
 
 // バックグラウンド処理
 func processVideo(v Video, apiKey string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("パニック回復: VideoID=%s, エラー=%v", v.ID, r)
+			updateVideoStatus(v.ID, "error")
+		}
+	}()
+	
 	log.Printf("処理開始: VideoID=%s", v.ID)
 	audioFile := v.ID + ".mp3"
 
@@ -391,6 +398,7 @@ func processVideo(v Video, apiKey string) {
 	log.Printf("翻訳完了")
 
 	// 4. 結果保存
+	log.Printf("結果保存開始: VideoID=%s", v.ID)
 	t := Transcript{
 		ID:           uuid.New().String(),
 		VideoId:      v.ID,
@@ -399,10 +407,22 @@ func processVideo(v Video, apiKey string) {
 		Segments:     segments,
 		CreatedAt:    time.Now().Format(time.RFC3339),
 	}
+	
+	log.Printf("セグメント数: %d", len(segments))
+	
+	log.Printf("ロック取得試行: VideoID=%s", v.ID)
 	mu.Lock()
+	log.Printf("ロック取得成功: VideoID=%s", v.ID)
+	
 	transcripts = append(transcripts, t)
-	updateVideoStatus(v.ID, "completed")
+	log.Printf("transcript追加完了: VideoID=%s", v.ID)
+	
+	// updateVideoStatus内でもmu.Lock()するためここで一旦解放
 	mu.Unlock()
+	log.Printf("ロック解除完了: VideoID=%s", v.ID)
+	
+	updateVideoStatus(v.ID, "completed")
+	log.Printf("ステータス更新完了: VideoID=%s", v.ID)
 	log.Printf("保存完了: VideoID=%s", v.ID)
 }
 

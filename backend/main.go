@@ -52,6 +52,7 @@ import (
 
 	speech "cloud.google.com/go/speech/apiv1"
 	"cloud.google.com/go/speech/apiv1/speechpb"
+	"cloud.google.com/go/storage"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -75,13 +76,21 @@ type SpeechUsage struct {
 	UsedMinutes int    `json:"used_minutes"` // 使用分数
 }
 
+// 字幕セグメント構造体（SRT生成用）
+type SubtitleSegment struct {
+	StartTime float64 `json:"start_time"` // 秒単位
+	EndTime   float64 `json:"end_time"`   // 秒単位
+	Text      string  `json:"text"`
+}
+
 // 字幕（文字起こし）の情報を表す構造体
 type Transcript struct {
-	ID           string `json:"id"`
-	VideoId      string `json:"video_id"`
-	Language     string `json:"langiage"`
-	TransriptSrt string `json:"transript_srt"`
-	CreatedAt    string `json:"created_at"`
+	ID           string             `json:"id"`
+	VideoId      string             `json:"video_id"`
+	Language     string             `json:"language"`
+	TransriptSrt string             `json:"transcript_srt"` // 全文テキスト（後方互換性のため）
+	Segments     []SubtitleSegment  `json:"segments"`       // SRT生成用セグメント
+	CreatedAt    string             `json:"created_at"`
 }
 
 // 翻訳済み字幕情報を表す構造体
@@ -360,7 +369,7 @@ func processVideo(v Video, apiKey string) {
 		return
 	}
 
-	transcriptText, err := transcribeWithGoogleSpeech(audioFile)
+	transcriptText, segments, err := transcribeWithGoogleSpeech(audioFile)
 	if err != nil {
 		updateVideoStatus(v.ID, "error")
 		log.Printf("Google Speech-to-Text error: %v", err)
@@ -387,6 +396,7 @@ func processVideo(v Video, apiKey string) {
 		VideoId:      v.ID,
 		Language:     "en",
 		TransriptSrt: transcriptText,
+		Segments:     segments,
 		CreatedAt:    time.Now().Format(time.RFC3339),
 	}
 	mu.Lock()
@@ -403,16 +413,17 @@ func translateTextWithGPT(text, apiKey string) (*TranslationResult, error) {
 	}
 
 	payload := map[string]interface{}{
-		"model": "gemini-1.5-flash",
-		"messages": []map[string]string{
-			{"role": "system", "content": "You are a professional translator."},
-			{"role": "user", "content": "Translate the following text to English:\n" + text},
+		"contents": []map[string]interface{}{
+			{
+				"parts": []map[string]string{
+					{"text": "You are a professional translator. Translate the following text to Japanese:\n" + text},
+				},
+			},
 		},
 	}
 	body, _ := json.Marshal(payload)
 
 	req, _ := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key="+apiKey, bytes.NewBuffer(body))
-	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{}
@@ -427,8 +438,40 @@ func translateTextWithGPT(text, apiKey string) (*TranslationResult, error) {
 		return nil, err
 	}
 
-	choices := res["choices"].([]interface{})
-	content := choices[0].(map[string]interface{})["message"].(map[string]interface{})["content"].(string)
+	// Gemini APIレスポンスの存在チェック
+	if res["candidates"] == nil {
+		return nil, fmt.Errorf("API応答にcandidatesが含まれていません: %+v", res)
+	}
+	
+	candidates, ok := res["candidates"].([]interface{})
+	if !ok || len(candidates) == 0 {
+		return nil, fmt.Errorf("candidatesが空またはnilです: %+v", res["candidates"])
+	}
+
+	firstCandidate, ok := candidates[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("candidates[0]が不正な形式です: %+v", candidates[0])
+	}
+
+	contentObj, ok := firstCandidate["content"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("contentが存在しないか不正な形式です: %+v", firstCandidate["content"])
+	}
+
+	parts, ok := contentObj["parts"].([]interface{})
+	if !ok || len(parts) == 0 {
+		return nil, fmt.Errorf("partsが存在しないか空です: %+v", contentObj["parts"])
+	}
+
+	firstPart, ok := parts[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("parts[0]が不正な形式です: %+v", parts[0])
+	}
+
+	content, ok := firstPart["text"].(string)
+	if !ok {
+		return nil, fmt.Errorf("textが存在しないか文字列ではありません: %+v", firstPart["text"])
+	}
 
 	result := &TranslationResult{
 		TranslatedText: content,
@@ -440,14 +483,117 @@ func translateTextWithGPT(text, apiKey string) (*TranslationResult, error) {
 	return result, nil
 }
 
+// Google Cloud Storageに音声ファイルをアップロードする関数
+func uploadToGCS(audioFile, bucketName string) (string, error) {
+	ctx := context.Background()
+
+	// 認証情報から GCS クライアントを作成
+	credentialsJSON := os.Getenv("GOOGLE_CREDENTIALS_JSON")
+	if credentialsJSON == "" {
+		return "", fmt.Errorf("GOOGLE_CREDENTIALS_JSON環境変数が設定されていません")
+	}
+
+	// JSONをパースして再構築
+	var rawCredentials map[string]interface{}
+	decoder := json.NewDecoder(strings.NewReader(credentialsJSON))
+	if err := decoder.Decode(&rawCredentials); err != nil {
+		return "", fmt.Errorf("認証JSON解析エラー: %v", err)
+	}
+	
+	if privateKey, ok := rawCredentials["private_key"].(string); ok {
+		rawCredentials["private_key"] = strings.ReplaceAll(privateKey, "\\n", "\n")
+	}
+	
+	credentialsBytes, err := json.Marshal(rawCredentials)
+	if err != nil {
+		return "", fmt.Errorf("認証JSON再構築エラー: %v", err)
+	}
+
+	// Storage クライアントを作成
+	client, err := storage.NewClient(ctx, option.WithCredentialsJSON(credentialsBytes))
+	if err != nil {
+		return "", fmt.Errorf("GCSクライアント作成エラー: %v", err)
+	}
+	defer client.Close()
+
+	// ファイルを読み込み
+	file, err := os.Open(audioFile)
+	if err != nil {
+		return "", fmt.Errorf("ファイル読み込みエラー: %v", err)
+	}
+	defer file.Close()
+
+	// GCSオブジェクト名を生成
+	objectName := fmt.Sprintf("audio/%s", audioFile)
+	
+	// アップロード実行
+	obj := client.Bucket(bucketName).Object(objectName)
+	w := obj.NewWriter(ctx)
+	
+	if _, err = io.Copy(w, file); err != nil {
+		return "", fmt.Errorf("アップロードエラー: %v", err)
+	}
+	
+	if err := w.Close(); err != nil {
+		return "", fmt.Errorf("アップロード完了エラー: %v", err)
+	}
+
+	// GCS URI を返す
+	gcsURI := fmt.Sprintf("gs://%s/%s", bucketName, objectName)
+	return gcsURI, nil
+}
+
+// Google Cloud Storageからファイルを削除する関数
+func deleteFromGCS(bucketName, objectName string) error {
+	ctx := context.Background()
+
+	// 認証情報から GCS クライアントを作成
+	credentialsJSON := os.Getenv("GOOGLE_CREDENTIALS_JSON")
+	if credentialsJSON == "" {
+		return fmt.Errorf("GOOGLE_CREDENTIALS_JSON環境変数が設定されていません")
+	}
+
+	// JSONをパースして再構築
+	var rawCredentials map[string]interface{}
+	decoder := json.NewDecoder(strings.NewReader(credentialsJSON))
+	if err := decoder.Decode(&rawCredentials); err != nil {
+		return fmt.Errorf("認証JSON解析エラー: %v", err)
+	}
+	
+	if privateKey, ok := rawCredentials["private_key"].(string); ok {
+		rawCredentials["private_key"] = strings.ReplaceAll(privateKey, "\\n", "\n")
+	}
+	
+	credentialsBytes, err := json.Marshal(rawCredentials)
+	if err != nil {
+		return fmt.Errorf("認証JSON再構築エラー: %v", err)
+	}
+
+	// Storage クライアントを作成
+	client, err := storage.NewClient(ctx, option.WithCredentialsJSON(credentialsBytes))
+	if err != nil {
+		return fmt.Errorf("GCSクライアント作成エラー: %v", err)
+	}
+	defer client.Close()
+
+	// ファイル削除
+	obj := client.Bucket(bucketName).Object(objectName)
+	if err := obj.Delete(ctx); err != nil {
+		return fmt.Errorf("ファイル削除エラー: %v", err)
+	}
+
+	log.Printf("GCSファイル削除完了: gs://%s/%s", bucketName, objectName)
+	return nil
+}
+
 // Google Speech-to-Textで音声ファイルを文字起こしする関数
-func transcribeWithGoogleSpeech(audioFile string) (string, error) {
+func transcribeWithGoogleSpeech(audioFile string) (string, []SubtitleSegment, error) {
 	ctx := context.Background()
 
 	// 認証情報をJSON文字列から設定
 	credentialsJSON := os.Getenv("GOOGLE_CREDENTIALS_JSON")
 	if credentialsJSON == "" {
-		return "", fmt.Errorf("GOOGLE_CREDENTIALS_JSON環境変数が設定されていません")
+		return "", nil, fmt.Errorf("GOOGLE_CREDENTIALS_JSON環境変数が設定されていません")
 	}
 
 	// JSONを一度パースしてから再構築することでエスケープを処理
@@ -456,7 +602,7 @@ func transcribeWithGoogleSpeech(audioFile string) (string, error) {
 	// まず生のJSONをパース
 	decoder := json.NewDecoder(strings.NewReader(credentialsJSON))
 	if err := decoder.Decode(&rawCredentials); err != nil {
-		return "", fmt.Errorf("認証JSON解析エラー: %v", err)
+		return "", nil, fmt.Errorf("認証JSON解析エラー: %v", err)
 	}
 	
 	// private_keyの改行エスケープを修正
@@ -467,38 +613,53 @@ func transcribeWithGoogleSpeech(audioFile string) (string, error) {
 	// 修正したJSONを再エンコード
 	credentialsBytes, err := json.Marshal(rawCredentials)
 	if err != nil {
-		return "", fmt.Errorf("認証JSON再構築エラー: %v", err)
+		return "", nil, fmt.Errorf("認証JSON再構築エラー: %v", err)
 	}
 
 	// クライアントを作成
 	client, err := speech.NewClient(ctx, option.WithCredentialsJSON(credentialsBytes))
 	if err != nil {
-		return "", fmt.Errorf("Speech-to-Textクライアント作成エラー: %v", err)
+		return "", nil, fmt.Errorf("Speech-to-Textクライアント作成エラー: %v", err)
 	}
 	defer client.Close()
 
-	// 音声ファイルを読み込み
-	audioData, err := os.Open(audioFile)
+	// ファイルサイズをチェック（無料枠保護）
+	fileInfo, err := os.Stat(audioFile)
 	if err != nil {
-		return "", fmt.Errorf("音声ファイル読み込みエラー: %v", err)
+		return "", nil, fmt.Errorf("ファイル情報取得エラー: %v", err)
 	}
-	defer audioData.Close()
+	
+	// 100MB制限（無料枠保護のため）
+	fileSizeMB := fileInfo.Size() / (1024 * 1024)
+	if fileSizeMB > 100 {
+		return "", nil, fmt.Errorf("ファイルサイズが大きすぎます（%dMB > 100MB制限）", fileSizeMB)
+	}
+	
+	log.Printf("音声ファイルサイズ: %dMB", fileSizeMB)
 
-	data, err := io.ReadAll(audioData)
+	// Google Cloud Storageにアップロード
+	bucketName := os.Getenv("GCS_BUCKET_NAME")
+	if bucketName == "" {
+		return "", nil, fmt.Errorf("GCS_BUCKET_NAME環境変数が設定されていません")
+	}
+	gcsURI, err := uploadToGCS(audioFile, bucketName)
 	if err != nil {
-		return "", fmt.Errorf("音声データ読み込みエラー: %v", err)
+		return "", nil, fmt.Errorf("GCSアップロードエラー: %v", err)
 	}
 
-	// 長時間音声認識リクエストを作成（ローカルファイル用）
+	log.Printf("GCSアップロード完了: %s", gcsURI)
+
+	// 長時間音声認識リクエストを作成（GCS URI使用）
 	req := &speechpb.LongRunningRecognizeRequest{
 		Config: &speechpb.RecognitionConfig{
 			Encoding:        speechpb.RecognitionConfig_MP3, // MP3形式
 			SampleRateHertz: 44100,                          // サンプルレート
 			LanguageCode:    "en-US",                        // 言語設定
+			EnableWordTimeOffsets: true,                     // 単語レベルのタイムスタンプ
 		},
 		Audio: &speechpb.RecognitionAudio{
-			AudioSource: &speechpb.RecognitionAudio_Content{
-				Content: data,
+			AudioSource: &speechpb.RecognitionAudio_Uri{
+				Uri: gcsURI,
 			},
 		},
 	}
@@ -506,22 +667,43 @@ func transcribeWithGoogleSpeech(audioFile string) (string, error) {
 	// 長時間音声認識を実行
 	op, err := client.LongRunningRecognize(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("音声認識開始エラー: %v", err)
+		return "", nil, fmt.Errorf("音声認識開始エラー: %v", err)
 	}
 
 	// 処理完了を待機
 	resp, err := op.Wait(ctx)
 	if err != nil {
-		return "", fmt.Errorf("音声認識エラー: %v", err)
+		return "", nil, fmt.Errorf("音声認識エラー: %v", err)
 	}
 
-	// 結果をテキストに変換
+	// 処理完了後、GCSファイルを削除（無料枠節約のため）
+	objectName := fmt.Sprintf("audio/%s", audioFile)
+	if deleteErr := deleteFromGCS(bucketName, objectName); deleteErr != nil {
+		log.Printf("GCS削除エラー（続行）: %v", deleteErr)
+	}
+
+	// 結果をテキストとセグメントに変換
 	var transcriptText string
+	var segments []SubtitleSegment
+	
 	for _, result := range resp.Results {
 		for _, alt := range result.Alternatives {
 			transcriptText += alt.Transcript + " "
+			
+			// 単語レベルのタイムスタンプから文レベルのセグメントを作成
+			if len(alt.Words) > 0 {
+				startTime := alt.Words[0].StartTime.AsDuration().Seconds()
+				endTime := alt.Words[len(alt.Words)-1].EndTime.AsDuration().Seconds()
+				
+				segment := SubtitleSegment{
+					StartTime: startTime,
+					EndTime:   endTime,
+					Text:      strings.TrimSpace(alt.Transcript),
+				}
+				segments = append(segments, segment)
+			}
 		}
 	}
 
-	return transcriptText, nil
+	return transcriptText, segments, nil
 }

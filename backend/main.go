@@ -489,8 +489,8 @@ func transcribeWithGoogleSpeech(audioFile string) (string, error) {
 		return "", fmt.Errorf("音声データ読み込みエラー: %v", err)
 	}
 
-	// 音声認識リクエストを作成
-	req := &speechpb.RecognizeRequest{
+	// 長時間音声認識リクエストを作成（ローカルファイル用）
+	req := &speechpb.LongRunningRecognizeRequest{
 		Config: &speechpb.RecognitionConfig{
 			Encoding:        speechpb.RecognitionConfig_MP3, // MP3形式
 			SampleRateHertz: 44100,                          // サンプルレート
@@ -503,8 +503,14 @@ func transcribeWithGoogleSpeech(audioFile string) (string, error) {
 		},
 	}
 
-	// 音声認識を実行
-	resp, err := client.Recognize(ctx, req)
+	// 長時間音声認識を実行
+	op, err := client.LongRunningRecognize(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("音声認識開始エラー: %v", err)
+	}
+
+	// 処理完了を待機
+	resp, err := op.Wait(ctx)
 	if err != nil {
 		return "", fmt.Errorf("音声認識エラー: %v", err)
 	}

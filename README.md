@@ -2,6 +2,8 @@
 go-subtitles-translation
 
 
+
+##はじめる
 go mod init モジュール名
 go mod tidy
 

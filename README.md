@@ -9,7 +9,7 @@
 ### ディレクトリ構造
 
 ### API仕様
-GET/videos
+GET/videos  
 PST/
 
 ### はじめる

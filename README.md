@@ -9,6 +9,8 @@
 ### ディレクトリ構造
 
 ### API仕様
+GET/videos
+PST/
 
 ### はじめる
 go mod init モジュール名  

@@ -1,7 +1,13 @@
 # go-subtitles-translation-v2
 ## go-subtitles-translation
 
+### 使用技術
 
+
+### 環境構築
+
+
+### API仕様
 
 ### はじめる
 go mod init モジュール名  

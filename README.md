@@ -67,7 +67,9 @@ go-subtitles-translation-v2/
 ```
 
 ## 環境構築
-##　API設計
+
+###　API設計　
+
 ### 前提条件
 
 - Go 1.21以上

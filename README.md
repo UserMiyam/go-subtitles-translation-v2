@@ -18,8 +18,7 @@
 - **音声認識**: Google Cloud Speech-to-Text API
 - **クラウドストレージ**: Google Cloud Storage
 - **CORS対応**: github.com/gin-contrib/cors
-- **環境変数管理**: github.com/joho/godotenv
-- **UUID生成**: github.com/google/uuid
+- **開発サーバー**: http://localhost:8080 
 
 ### フロントエンド
 - **フレームワーク**: React 18

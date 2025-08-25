@@ -33,7 +33,7 @@
 - **Google Cloud Storage**: 音声ファイル保存
 - **翻訳API**: 多言語翻訳処理
 
-###　API設計　
+### API設計
 
 
 

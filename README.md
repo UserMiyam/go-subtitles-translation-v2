@@ -33,6 +33,10 @@
 - **Google Cloud Storage**: 音声ファイル保存
 - **翻訳API**: 多言語翻訳処理
 
+###　API設計　
+
+
+
 ## ディレクトリ構造
 
 ```
@@ -67,8 +71,6 @@ go-subtitles-translation-v2/
 ```
 
 ## 環境構築
-
-###　API設計　
 
 ### 前提条件
 

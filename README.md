@@ -41,7 +41,7 @@
 ```
 go-subtitles-translation-v2/
 ├── backend/                    # Goバックエンドアプリケーション
-│   └── main.go                # メインAPIサーバー
+│   └── main.go                # メインAPIサーバー　MVCに修正
 ├── my-react-app/              # Reactフロントエンドアプリケーション
 │   ├── public/                # 静的ファイル
 │   ├── src/                   # ソースコード

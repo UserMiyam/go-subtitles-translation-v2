@@ -89,3 +89,9 @@ cd 新しいプロジェクト名
 npm install  
 npm run dev  
 Local:   http://localhost:5173/  
+
+
+
+## 改善
+クリーンアーキDDD検討et…
+

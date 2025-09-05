@@ -33,13 +33,13 @@
 - **翻訳API**: 多言語翻訳処理
 
 ### API設計
-エンドポイント設計:　
-GET /videos # 動画リスト取得　
-POST /videos # 新規動画作成　
-GET /videos/:id # 特定動画取得　
-PUT /videos/:id/status # ステータス更新　
-GET /videos/:id/transcript # 字幕データ取得　
-GET /videos/:id/translation # 翻訳データ取得　
+エンドポイント設計: 
+GET /videos # 動画リスト取得 
+POST /videos # 新規動画作成 
+GET /videos/:id # 特定動画取得 
+PUT /videos/:id/status # ステータス更新 
+GET /videos/:id/transcript # 字幕データ取得 
+GET /videos/:id/translation # 翻訳データ取得 
 
 ## ディレクトリ構造
 

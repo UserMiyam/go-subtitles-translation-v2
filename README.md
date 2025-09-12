@@ -99,6 +99,7 @@ Local:   http://localhost:5173/
 
 ## 改善
 MVCに修正
+Go.1.25、net/httoCrossOriginProtextionの実装が簡易になっている。
 クリーンアーキDDD検討etc…
 
 
